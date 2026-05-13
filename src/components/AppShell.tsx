@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react';
-import { Satellite, LogIn, Loader2 } from 'lucide-react';
+import { Satellite } from 'lucide-react';
 import { Disclaimer } from './ui/Disclaimer';
-import { useEarthEngine } from '../lib/useEarthEngine';
 
 interface Props {
   children: ReactNode;
@@ -10,7 +9,6 @@ interface Props {
 }
 
 export function AppShell({ children, onHome, breadcrumb = [] }: Props) {
-  const { state: eeState, login, logout } = useEarthEngine();
 
   return (
     <div className="min-h-screen bg-tn-bg">
@@ -40,27 +38,9 @@ export function AppShell({ children, onHome, breadcrumb = [] }: Props) {
             <span className="text-tn-text-subtle cursor-default">Reports</span>
           </nav>
           <div className="hidden items-center gap-2 sm:flex">
-            {eeState === 'ready' ? (
-              <button
-                type="button"
-                onClick={logout}
-                className="flex items-center gap-1.5 rounded-full border border-tn-accent/40 bg-tn-accent/15 px-2.5 py-1 text-xs font-medium text-tn-accent hover:bg-tn-accent/25 transition-colors"
-              >
-                <Satellite className="h-3 w-3" /> GEE connected
-              </button>
-            ) : eeState === 'authenticating' ? (
-              <span className="flex items-center gap-1.5 rounded-full border border-tn-border bg-tn-surface px-2.5 py-1 text-xs text-tn-text-muted">
-                <Loader2 className="h-3 w-3 animate-spin" /> Connecting…
-              </span>
-            ) : (
-              <button
-                type="button"
-                onClick={login}
-                className="flex items-center gap-1.5 rounded-full border border-tn-border bg-tn-surface px-2.5 py-1 text-xs text-tn-text-muted hover:border-tn-accent/40 hover:text-tn-accent transition-colors"
-              >
-                <LogIn className="h-3 w-3" /> Sign in to GEE
-              </button>
-            )}
+            <span className="flex items-center gap-1.5 rounded-full border border-tn-accent/40 bg-tn-accent/15 px-2.5 py-1 text-xs font-medium text-tn-accent">
+              <Satellite className="h-3 w-3" /> GEE · Live data
+            </span>
             <span className="rounded-full border border-tn-border bg-tn-hover px-2.5 py-1 text-xs font-medium text-tn-text-subtle">
               MVP
             </span>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Plus, MapPin, Leaf, Calendar, AlertTriangle, ArrowRight, Loader2 } from 'lucide-react';
-import { ensureSeedProjects, fetchProjects } from '../services/projectService';
+import { fetchProjects } from '../services/projectService';
 import type { Project } from '../types';
 import { ScoreBadge } from '../components/ui/ScoreBadge';
 
@@ -24,7 +24,6 @@ export function ProjectsPage({ onOpen, onNew }: Props) {
   useEffect(() => {
     (async () => {
       try {
-        await ensureSeedProjects();
         const list = await fetchProjects();
         setProjects(list);
       } finally {

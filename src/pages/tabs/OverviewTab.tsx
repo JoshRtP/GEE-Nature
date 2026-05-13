@@ -35,8 +35,8 @@ export function OverviewTab({ project, units, issues, layers }: Props) {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <Section title="Project map" description="Toggle mock layers · TODO: connect to GEE map tiles." className="lg:col-span-2">
-          <MapPanel layers={layers} caption="Mock layers shown for demonstration only." />
+        <Section title="Project map" description="Satellite basemap · GEE field boundaries colour-coded by condition score" className="lg:col-span-2">
+          <MapPanel layers={layers} projectId={project.id} units={units} caption="Live GEE field boundaries · ESA satellite basemap" />
         </Section>
         <Section title="Score radar" description="Component scores 0–100">
           <div className="flex justify-center">

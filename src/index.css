@@ -37,3 +37,17 @@ body {
 .animate-fadeIn {
   animation: fadeIn 0.3s ease forwards;
 }
+
+/* Leaflet tooltip dark theme override */
+.leaflet-tooltip.tn-tooltip {
+  background: #161b22;
+  border: 1px solid #30363d;
+  color: #e6edf3;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+}
+.leaflet-tooltip.tn-tooltip::before {
+  display: none;
+}

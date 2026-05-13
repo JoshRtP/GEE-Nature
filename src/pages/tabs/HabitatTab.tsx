@@ -32,7 +32,7 @@ const FRANCE_COVER: Record<string, { riparian: number; wetland: number; grasslan
 };
 
 export function HabitatTab({ project, units, layers }: Props) {
-  const isFrance = project.id === 'seed-france';
+  const isFrance = project.id === 'seed-france' || project.name?.toLowerCase().includes('loire');
 
   const ndvi    = isFrance ? generateFranceNDVISeries() : generateNDVISeries(2);
   const ranked  = [...units].sort((a, b) => b.condition_change - a.condition_change);
@@ -78,7 +78,7 @@ export function HabitatTab({ project, units, layers }: Props) {
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Section title="Habitat extent map" description={mapDescription} className="lg:col-span-2">
-          <MapPanel layers={layers} projectId={project.id} />
+          <MapPanel layers={layers} projectId={project.id} units={units} />
         </Section>
         <Section title="Habitat gain / loss" description="Net habitat change by unit, ha">
           <BarChart

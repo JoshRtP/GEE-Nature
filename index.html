@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TerraNexus Co-benefit Platform</title>
+    <meta property="og:image" content="https://bolt.new/static/og_default.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://bolt.new/static/og_default.png" />
+  </head>
+  <body style="background-color:#0d1117;">
+    <div id="root"></div>
+    <!-- Google Identity Services — must load before EE so ensureAuthLibLoaded_ finds window.default_gsi already set -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <!-- Google Earth Engine JS client — loads window.ee before React boots -->
+    <script src="/ee_api_js_npm.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

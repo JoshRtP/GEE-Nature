@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"\nimport sys, json, re\ndata = json.load(sys.stdin)\nfp = data.get('tool_input', {}).get('file_path') or data.get('tool_response', {}).get('filePath', '')\nif not fp or not fp.endswith('CommunityTab.tsx'):\n    sys.exit(0)\ntry:\n    with open(fp) as f:\n        content = f.read()\n    fixed = re.sub(r'(\\})\\s*\\n\\s*\\}\\s*$', r'\\1\\n', content)\n    if fixed != content:\n        with open(fp, 'w') as f:\n            f.write(fixed)\nexcept Exception:\n    pass\n\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

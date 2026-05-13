@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head><meta charset="UTF-8"><title>Authenticating...</title></head>
+<body>
+<script>
+  // Parse the OAuth implicit-grant fragment (#access_token=...&token_type=...&expires_in=...)
+  var params = {};
+  window.location.hash.slice(1).split('&').forEach(function(pair) {
+    var parts = pair.split('=');
+    params[decodeURIComponent(parts[0])] = decodeURIComponent(parts[1] || '');
+  });
+
+  var msg = params.error
+    ? { type: 'oauth_callback', error: params.error }
+    : { type: 'oauth_callback', access_token: params.access_token, token_type: params.token_type, expires_in: params.expires_in };
+
+  if (window.opener) {
+    window.opener.postMessage(msg, window.location.origin);
+  }
+  window.close();
+</script>
+<p style="font-family:sans-serif;color:#555;text-align:center;margin-top:40px">Completing sign in…</p>
+</body>
+</html>

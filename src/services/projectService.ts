@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabase';
-import type { Project, SpatialUnit, QAIssue, CommunityIndicator } from '../types';
+import type { Project, SpatialUnit, QAIssue, CommunityIndicator, MetricTimeseries } from '../types';
 import { SEED_PROJECTS } from '../mock/seedData';
 
 // TODO: Backend/GEE integration — replace mock returns with real geospatial pipeline calls.
@@ -115,6 +115,24 @@ export async function fetchQAIssues(projectId: string): Promise<QAIssue[]> {
 export async function updateQAIssueResolved(id: string, resolved: boolean) {
   const { error } = await supabase.from('qa_issues').update({ resolved }).eq('id', id);
   if (error) throw error;
+}
+
+export async function fetchTimeSeries(
+  projectId: string,
+  metric: 'ndvi' | 'ndmi',
+): Promise<MetricTimeseries[]> {
+  const { data, error } = await supabase
+    .from('metric_timeseries')
+    .select('*')
+    .eq('project_id', projectId)
+    .eq('metric_name', metric)
+    .is('unit_id', null)
+    .order('period_month', { ascending: true });
+  if (error) {
+    // Table may not exist yet if migration hasn't been run — return empty
+    return [];
+  }
+  return (data || []) as MetricTimeseries[];
 }
 
 export async function fetchCommunityIndicator(projectId: string): Promise<CommunityIndicator | null> {

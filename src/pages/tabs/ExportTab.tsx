@@ -13,11 +13,12 @@ interface Props {
 export function ExportTab({ project, units, issues }: Props) {
   const downloadCSV = () => {
     const headers = [
-      'project_id', 'unit_id', 'area_ha', 'habitat_area_ha', 'habitat_change_ha',
-      'baseline_condition_score', 'monitoring_condition_score', 'condition_change',
-      'connectivity_score', 'water_risk_class', 'wri_baseline_water_stress',
-      'terraclimate_deficit_mean', 'spei3_min', 'vegetation_drought_resilience_score',
-      'erosion_pressure_proxy', 'livelihood_support_evidence_score',
+      'project_id', 'unit_id', 'area_ha', 'habitat_area_ha', 'vegetated_area_ha',
+      'habitat_change_ha', 'baseline_condition_score', 'monitoring_condition_score',
+      'condition_change', 'connectivity_score', 'water_risk_class',
+      'wri_baseline_water_stress', 'terraclimate_deficit_mean', 'spei3_min',
+      'vegetation_drought_resilience_score', 'erosion_pressure_proxy',
+      'surface_water_occurrence_1km', 'livelihood_support_evidence_score',
       'overall_cobenefit_score', 'qa_status', 'qa_warning_count',
     ];
     const rows = units.map(u => headers.map(h => (u as unknown as Record<string, unknown>)[h] ?? project.id).join(','));
@@ -29,12 +30,35 @@ export function ExportTab({ project, units, issues }: Props) {
     URL.revokeObjectURL(url);
   };
 
+  const downloadGeoJSON = async () => {
+    try {
+      const geo = await fetch('/france_boundaries.geojson').then(r => r.json());
+      const unitMap: Record<string, unknown> = Object.fromEntries(
+        units.map(u => [u.unit_id, u])
+      );
+      const enriched = {
+        ...geo,
+        features: geo.features.map((f: { properties: Record<string, unknown>; [k: string]: unknown }) => ({
+          ...f,
+          properties: { ...f.properties, ...(unitMap[f.properties.unit_id as string] || {}) },
+        })),
+      };
+      const blob = new Blob([JSON.stringify(enriched)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `${project.name.replace(/\s+/g, '_')}_metrics.geojson`; a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('GeoJSON boundaries file not found. Make sure france_boundaries.geojson is in /public/.');
+    }
+  };
+
   return (
     <div className="space-y-6">
       <Section title="Export options" description="Generate evidence-ready outputs for the current monitoring period.">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           <ExportCard format="CSV" title="Metrics table" description="Spatial-unit metrics for analysis or audit." icon={FileSpreadsheet} onExport={downloadCSV} />
-          <ExportCard format="GeoJSON" title="Spatial layer" description="Project boundary and metric attributes." icon={FileJson} />
+          <ExportCard format="GeoJSON" title="Spatial layer" description="Project boundary and metric attributes." icon={FileJson} onExport={downloadGeoJSON} />
           <ExportCard format="PDF" title="Evidence report" description="Full project evidence package." icon={FileText} />
           <ExportCard format="Methods" title="Methods appendix" description="Datasets, formulas, weights, and thresholds." icon={FileCheck} />
           <ExportCard format="QA" title="QA/QC exception report" description="All warnings, severities, and resolutions." icon={ShieldAlert} />

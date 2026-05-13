@@ -235,10 +235,14 @@ def run(dry_run: bool = False):
     # -----------------------------------------------------------------------
     print("Loading ESA WorldCover 2021 …")
     worldcover = ee.Image("ESA/WorldCover/v200/2021").clip(france_aoi)
+    # .unmask(0) converts NoData pixels to 0 so mean() reducer works correctly
     habitat_mask = worldcover.remap(
         ALL_WORLDCOVER_CLASSES,
         [1 if c in HABITAT_CLASSES else 0 for c in ALL_WORLDCOVER_CLASSES]
-    ).rename("habitat")
+    ).unmask(0).rename("habitat")
+
+    # Vegetated fraction — NDVI > 0.25 captures all green vegetation including cropland
+    veg_mask = s2_mon.select("NDVI").gt(0.25).unmask(0).rename("vegetated")
 
     # -----------------------------------------------------------------------
     # WRI Aqueduct v4 — spatial join (NOT rasterized — avoids memory spike)
@@ -323,17 +327,52 @@ def run(dry_run: bool = False):
         crs="EPSG:4326",
     )
 
-    print("Running reduceRegions pass 3 of 3 — WorldCover habitat (scale 10 m) …")
-    habitat_stats = habitat_mask.reduceRegions(
+    print("Running reduceRegions pass 3 of 4 — WorldCover habitat + vegetated fraction (scale 10 m) …")
+    habitat_stats = habitat_mask.addBands(veg_mask).reduceRegions(
         collection=fields,
         reducer=ee.Reducer.mean(),
         scale=10,
+    )
+
+    print("Running reduceRegions pass 4 of 4 — JRC surface water 1 km buffer (scale 30 m) …")
+    jrc_occurrence = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").unmask(0)
+    fields_1km = fields.map(lambda f: f.buffer(1000))
+    jrc_stats = jrc_occurrence.reduceRegions(
+        collection=fields_1km,
+        reducer=ee.Reducer.mean(),
+        scale=30,
+        crs="EPSG:4326",
     )
 
     def add_area2(feat):
         area_ha = feat.geometry().area(maxError=1).divide(10000)
         return feat.set("area_ha_computed", area_ha)
     fields_with_area2 = fields.map(add_area2)
+
+    # SPEI at project centroid — single point avoids per-field raster stack memory overhead
+    print("Computing SPEI-3 at project centroid …")
+    project_spei3_min = -1.8  # Loire-typical fallback
+    try:
+        centroid_pt = ee.Geometry.Point([0.19, 47.38])  # Loire AOI centroid
+        spei_img = (
+            ee.ImageCollection("CSIC/SPEI/2_10")
+            .filterDate(MONITORING_START, MONITORING_END)
+            .select("SPEI_03_month")  # correct band name (zero-padded)
+            .min()
+        )
+        spei_r = spei_img.reduceRegion(
+            reducer=ee.Reducer.first(),
+            geometry=centroid_pt,
+            scale=55000,
+            maxPixels=10,
+        ).getInfo()
+        if spei_r and spei_r.get("SPEI_03_month") is not None:
+            project_spei3_min = round(float(spei_r["SPEI_03_month"]), 3)
+            print(f"  SPEI-3 minimum: {project_spei3_min}")
+        else:
+            print("  SPEI data unavailable — using Loire fallback −1.8")
+    except Exception as exc:
+        print(f"  SPEI error ({exc}) — using Loire fallback −1.8")
 
     print("Evaluating S2 metrics … (may take 2-5 minutes) …")
     s2_results      = s2_stats.getInfo()
@@ -344,6 +383,65 @@ def run(dry_run: bool = False):
     area_result_raw = fields_with_area2.getInfo()
     print("Evaluating Aqueduct BWS …")
     bws_raw         = bws_features.getInfo()
+    print("Evaluating JRC surface water …")
+    jrc_results     = jrc_stats.getInfo()
+
+    # -----------------------------------------------------------------------
+    # Monthly NDVI/NDMI time series — project-level aggregate, 2021–2024
+    # Computed server-side as a mapped FeatureCollection to keep a single getInfo().
+    # -----------------------------------------------------------------------
+    print("Computing monthly NDVI/NDMI time series (2021–2024) …")
+    _ts_raw = None
+    try:
+        def _monthly_feat(ym_ee):
+            ym    = ee.List(ym_ee)
+            year  = ee.Number(ym.get(0))
+            month = ee.Number(ym.get(1))
+            d_start = ee.Date.fromYMD(year, month, 1)
+            d_end   = d_start.advance(1, "month")
+            img = (
+                ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                .filterBounds(france_aoi)
+                .filterDate(d_start, d_end)
+                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
+                .limit(6)
+                .median()
+                .clip(france_aoi)
+            )
+            ndvi = img.normalizedDifference(["B8", "B4"]).rename("ndvi")
+            ndmi = img.normalizedDifference(["B8", "B11"]).rename("ndmi")
+            stats = ndvi.addBands(ndmi).reduceRegion(
+                reducer=ee.Reducer.mean(),
+                geometry=france_aoi,
+                scale=500,
+                maxPixels=int(1e6),
+            )
+            return ee.Feature(None, stats.set("period_month", d_start.format("YYYY-MM-dd")))
+
+        ym_list = ee.List([[y, m] for y in range(2021, 2025) for m in range(1, 13)])
+        _ts_fc  = ee.FeatureCollection(ym_list.map(_monthly_feat))
+        _ts_raw = _ts_fc.getInfo()
+        print(f"  Got {len(_ts_raw['features'])} monthly composites")
+    except Exception as exc:
+        print(f"  Time series error ({exc}) — skipping")
+
+    # Build time series rows for Supabase
+    timeseries_rows: list[dict] = []
+    if _ts_raw:
+        for feat in _ts_raw["features"]:
+            props  = feat.get("properties") or {}
+            period = props.get("period_month")
+            if not period:
+                continue
+            for metric in ("ndvi", "ndmi"):
+                v = props.get(metric)
+                if v is not None:
+                    timeseries_rows.append({
+                        "metric_name":  metric,
+                        "period_month": period,
+                        "value":        round(float(v), 4),
+                        "period_type":  "monthly",
+                    })
 
     # Build per-unit BWS lookup (Aqueduct polygons cover all fields in Loire)
     bws_by_idx: dict[int, float] = {}
@@ -363,14 +461,22 @@ def run(dry_run: bool = False):
         main_features.append({"type": "Feature", "properties": merged_props, "geometry": s2_feat.get("geometry")})
     main_results = {"type": "FeatureCollection", "features": main_features}
 
-    # Index habitat fractions and areas by feature index
+    # Index habitat fractions, vegetated fractions, JRC surface water, and areas
     habitat_by_idx = {
         i: f["properties"].get("habitat", 0.0) or 0.0
+        for i, f in enumerate(habitat_result["features"])
+    }
+    veg_by_idx = {
+        i: f["properties"].get("vegetated", 0.0) or 0.0
         for i, f in enumerate(habitat_result["features"])
     }
     area_by_idx = {
         i: (f["properties"].get("area_ha_computed") or 0.0)
         for i, f in enumerate(area_result_raw["features"])
+    }
+    jrc_by_idx = {
+        i: f["properties"].get("occurrence", 0.0) or 0.0
+        for i, f in enumerate(jrc_results["features"])
     }
 
     # -----------------------------------------------------------------------
@@ -424,8 +530,14 @@ def run(dry_run: bool = False):
         mon_bsi   = g("mon_bsi",   0.02)
 
         # --- Habitat extent
-        habitat_fraction = habitat_by_idx.get(i, 0.65)  # fraction of pixels = habitat class
-        habitat_area_ha  = round(area_ha * habitat_fraction, 2)
+        # For agricultural parcels (e.g. Loire cropland), natural-habitat fraction is correctly ~0.
+        habitat_fraction  = habitat_by_idx.get(i, 0.0)
+        habitat_area_ha   = round(area_ha * habitat_fraction, 2)
+        # Vegetated area (NDVI > 0.25) — meaningful for cropland + riparian vegetation
+        veg_fraction      = veg_by_idx.get(i, 0.0)
+        vegetated_area_ha = round(area_ha * veg_fraction, 2)
+        # JRC surface water occurrence mean within 1 km buffer (0–100)
+        surface_water_occ_1km = round(jrc_by_idx.get(i, 0.0), 1)
 
         # Rough habitat change: compare ESA WorldCover 2020 vs 2021
         # For MVP: use NDVI change as proxy for habitat condition change
@@ -464,11 +576,8 @@ def run(dry_run: bool = False):
             cwd_mean = 145.0
         cwd_mean = round(float(cwd_mean), 1)
 
-        # --- SPEI
-        spei3_min = g("spei3_min", -1.8)
-        if math.isnan(spei3_min) if spei3_min == spei3_min else False:
-            spei3_min = -1.8
-        spei3_min = round(float(spei3_min), 3)
+        # --- SPEI (project centroid value — shared across all units)
+        spei3_min = round(project_spei3_min, 3)
 
         # --- Drought resilience
         drought_resilience = round(spei_to_resilience_score(spei3_min))
@@ -476,8 +585,8 @@ def run(dry_run: bool = False):
         # --- Erosion pressure (BSI monitoring, scaled 0-100, 0=low erosion)
         erosion_pressure = round(clamp((mon_bsi + 0.20) / 0.40 * 100, 0, 100))
 
-        # --- Connectivity (simple proxy)
-        connectivity = round(connectivity_proxy(area_ha, habitat_area_ha))
+        # --- Connectivity (proxy — use vegetated area for agricultural parcels)
+        connectivity = round(connectivity_proxy(area_ha, max(vegetated_area_ha, habitat_area_ha)))
 
         # --- Overall
         overall_score = round(compute_overall_cobenefit_score(
@@ -529,6 +638,9 @@ def run(dry_run: bool = False):
             "overall_cobenefit_score": overall_score,
             "qa_status": qa_status,
             "qa_warning_count": len(qa_warnings),
+            # Phase A new columns — added by migration 20260513140000_v2_phase_a.sql
+            "surface_water_occurrence_1km": surface_water_occ_1km,
+            "vegetated_area_ha": vegetated_area_ha,
         }
         spatial_units.append(unit)
 
@@ -623,13 +735,31 @@ def run(dry_run: bool = False):
     sb.table("spatial_units").delete().eq("project_id", france_project_id).execute()
     print(f"  Cleared old spatial units")
 
-    # Insert in batches of 50
+    # Insert in batches of 50 — with fallback if Phase A columns not yet in schema
+    _NEW_COLS = {"surface_water_occurrence_1km", "vegetated_area_ha"}
+    _schema_has_new_cols: bool | None = None  # detect lazily
+
     batch_size = 50
     for start in range(0, len(spatial_units), batch_size):
         batch = spatial_units[start : start + batch_size]
         for u in batch:
             u["project_id"] = france_project_id
-        sb.table("spatial_units").insert(batch).execute()
+        if _schema_has_new_cols is False:
+            # Already know columns are missing — strip them
+            batch = [{k: v for k, v in u.items() if k not in _NEW_COLS} for u in batch]
+        try:
+            sb.table("spatial_units").insert(batch).execute()
+            if _schema_has_new_cols is None:
+                _schema_has_new_cols = True
+        except Exception as e:
+            if _schema_has_new_cols is None and "column" in str(e).lower():
+                print("  Phase A columns not in schema yet — run migration 20260513140000_v2_phase_a.sql")
+                print("  Writing without new columns …")
+                _schema_has_new_cols = False
+                batch = [{k: v for k, v in u.items() if k not in _NEW_COLS} for u in batch]
+                sb.table("spatial_units").insert(batch).execute()
+            else:
+                raise
 
     print(f"  Inserted {len(spatial_units)} spatial unit rows")
 
@@ -655,6 +785,19 @@ def run(dry_run: bool = False):
     if qa_rows:
         sb.table("qa_issues").insert(qa_rows).execute()
         print(f"  Inserted {len(qa_rows)} QA issue rows")
+
+    # 4. Time series (metric_timeseries table — requires migration 20260513140000_v2_phase_a.sql)
+    if timeseries_rows:
+        try:
+            sb.table("metric_timeseries").delete().eq("project_id", france_project_id).execute()
+            ts_with_pid = [{**r, "project_id": france_project_id, "unit_id": None}
+                           for r in timeseries_rows]
+            for start in range(0, len(ts_with_pid), 100):
+                sb.table("metric_timeseries").insert(ts_with_pid[start:start + 100]).execute()
+            print(f"  Inserted {len(ts_with_pid)} time series rows")
+        except Exception as e:
+            print(f"  metric_timeseries not available ({e})")
+            print("  Run migration supabase/migrations/20260513140000_v2_phase_a.sql to enable")
 
     print("\nDone — real GEE metrics are now in Supabase.")
     print(f"Open the app, go to the France project, and you will see live computed data.")

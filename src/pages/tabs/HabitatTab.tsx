@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import type { Project, SpatialUnit } from '../../types';
 import { Section } from '../../components/ui/Section';
 import { MapPanel } from '../../components/MapPanel';
@@ -7,6 +8,7 @@ import { TimeSeriesChart } from '../../components/charts/TimeSeriesChart';
 import { MetricTable } from '../../components/MetricTable';
 import { ScoreBadge } from '../../components/ui/ScoreBadge';
 import { GEELoginGate } from '../../components/GEELoginGate';
+import { fetchTimeSeries } from '../../services/projectService';
 import { generateNDVISeries, generateFranceNDVISeries } from '../../mock/seedData';
 
 interface Props {
@@ -34,7 +36,33 @@ const FRANCE_COVER: Record<string, { riparian: number; wetland: number; grasslan
 export function HabitatTab({ project, units, layers }: Props) {
   const isFrance = project.id === 'seed-france' || project.name?.toLowerCase().includes('emea') || project.name?.toLowerCase().includes('loire');
 
-  const ndvi    = isFrance ? generateFranceNDVISeries() : generateNDVISeries(2);
+  // Real Supabase time series — falls back to mock data if table doesn't exist yet
+  const mockNdvi = isFrance ? generateFranceNDVISeries() : generateNDVISeries(2);
+  const [ndviSeries, setNdviSeries] = useState<{ x: string; y: number }[]>([]);
+  const [ndmiSeries, setNdmiSeries] = useState<{ x: string; y: number }[]>([]);
+  const [tsLoaded, setTsLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([fetchTimeSeries(project.id, 'ndvi'), fetchTimeSeries(project.id, 'ndmi')]).then(
+      ([ndviRows, ndmiRows]) => {
+        if (cancelled) return;
+        if (ndviRows.length > 0) {
+          setNdviSeries(ndviRows.map(r => ({ x: r.period_month.slice(0, 7), y: r.value })));
+          setNdmiSeries(ndmiRows.map(r => ({ x: r.period_month.slice(0, 7), y: r.value })));
+        }
+        setTsLoaded(true);
+      }
+    );
+    return () => { cancelled = true; };
+  }, [project.id]);
+
+  // Use real data if loaded, otherwise fall back to mock
+  const useRealTs = tsLoaded && ndviSeries.length > 0;
+  const ndviBaselineMock = mockNdvi.map(d => ({ x: d.month, y: d.baseline }));
+  const ndviMonitoringData = useRealTs ? ndviSeries : mockNdvi.map(d => ({ x: d.month, y: d.monitoring }));
+  const ndmiMonitoringData = useRealTs ? ndmiSeries : mockNdvi.map(d => ({ x: d.month, y: d.ndmi_monitoring }));
+
   const ranked  = [...units].sort((a, b) => b.condition_change - a.condition_change);
 
   const stackedClasses = units.slice(0, 8).map(u => {
@@ -103,15 +131,16 @@ export function HabitatTab({ project, units, layers }: Props) {
             yMin={0}
             yMax={isFrance ? 0.9 : 0.8}
             series={[
-              { label: 'NDVI baseline',   color: '#484f58', data: ndvi.map(d => ({ x: d.month, y: d.baseline })) },
-              { label: 'NDVI monitoring', color: '#238636', data: ndvi.map(d => ({ x: d.month, y: d.monitoring })) },
-              { label: 'NDMI monitoring', color: '#0ea5e9', data: ndvi.map(d => ({ x: d.month, y: d.ndmi_monitoring })) },
+              ...(!useRealTs ? [{ label: 'NDVI baseline', color: '#484f58', data: ndviBaselineMock }] : []),
+              { label: useRealTs ? 'NDVI (monthly)' : 'NDVI monitoring', color: '#238636', data: ndviMonitoringData },
+              { label: useRealTs ? 'NDMI (monthly)' : 'NDMI monitoring', color: '#0ea5e9', data: ndmiMonitoringData },
             ]}
           />
           {isFrance && (
             <p className="mt-2 text-xs text-tn-text-subtle">
-              NDMI elevated year-round due to Loire floodplain moisture regime. 2024 spring flush
-              (+0.05 NDVI vs baseline) reflects successful riparian planting in FR-04, FR-06, FR-08.
+              {useRealTs
+                ? 'Real Sentinel-2 monthly composites · 500m project aggregate · 2021–2024 · GEE computed'
+                : 'NDMI elevated year-round due to Loire floodplain moisture regime. Loading real time series…'}
             </p>
           )}
         </Section>
@@ -124,7 +153,7 @@ export function HabitatTab({ project, units, layers }: Props) {
           columns={[
             { key: 'unit', header: 'Unit',         render: u => <span className="font-medium text-tn-text">{u.unit_id}</span> },
             { key: 'area', header: 'Area (ha)',     align: 'right', render: u => u.area_ha.toFixed(1) },
-            { key: 'hab',  header: 'Habitat (ha)',  align: 'right', render: u => u.habitat_area_ha.toFixed(1) },
+            { key: 'hab',  header: 'Veg. area (ha)',  align: 'right', render: u => (u.vegetated_area_ha ?? u.habitat_area_ha).toFixed(1) },
             { key: 'b',    header: 'Baseline',      align: 'right', render: u => Math.round(u.baseline_condition_score) },
             { key: 'm',    header: 'Monitoring',    align: 'right', render: u => Math.round(u.monitoring_condition_score) },
             { key: 'c',    header: 'Δ Condition',   align: 'right', render: u => (

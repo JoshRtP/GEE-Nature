@@ -32,7 +32,7 @@ const FRANCE_COVER: Record<string, { riparian: number; wetland: number; grasslan
 };
 
 export function HabitatTab({ project, units, layers }: Props) {
-  const isFrance = project.id === 'seed-france' || project.name?.toLowerCase().includes('loire');
+  const isFrance = project.id === 'seed-france' || project.name?.toLowerCase().includes('emea') || project.name?.toLowerCase().includes('loire');
 
   const ndvi    = isFrance ? generateFranceNDVISeries() : generateNDVISeries(2);
   const ranked  = [...units].sort((a, b) => b.condition_change - a.condition_change);

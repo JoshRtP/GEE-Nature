@@ -22,7 +22,7 @@ const RISK_TONE: Record<string, string> = {
 };
 
 export function WaterTab({ project, units, layers }: Props) {
-  const isFrance = project.id === 'seed-france' || project.name?.toLowerCase().includes('loire');
+  const isFrance = project.id === 'seed-france' || project.name?.toLowerCase().includes('emea') || project.name?.toLowerCase().includes('loire');
 
   const spei = isFrance
     ? generateFranceSPEISeries()

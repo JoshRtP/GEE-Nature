@@ -36,11 +36,11 @@ interface Props {
 
 // Colour ramp: monitoring_condition_score 0–100
 function scoreToColor(score: number): string {
-  if (score >= 80) return '#238636';
-  if (score >= 70) return '#2ea043';
-  if (score >= 60) return '#58a6ff';
-  if (score >= 50) return '#f0883e';
-  return '#f85149';
+  if (score >= 80) return '#4ade80';  // bright green
+  if (score >= 70) return '#86efac';  // light green
+  if (score >= 60) return '#60a5fa';  // blue
+  if (score >= 50) return '#fb923c';  // orange
+  return '#f87171';                   // red
 }
 
 // Tile providers
@@ -85,11 +85,28 @@ export function MapPanel({ layers: initialLayers, height = 420, caption, project
       attributionControl: true,
     });
 
+    // Add a custom "mask" pane that sits above tiles but below vectors
+    // to allow a semi-transparent dark overlay
+    map.createPane('maskPane');
+    const maskPaneEl = map.getPane('maskPane');
+    if (maskPaneEl) maskPaneEl.style.zIndex = '250';
+
     const t = TILE_LAYERS[basemap];
     tileLayerRef.current = L.tileLayer(t.url, {
       attribution: t.attribution,
       maxZoom: t.maxZoom,
+      opacity: 0.55,   // dim the satellite so coloured fields stand out
     }).addTo(map);
+
+    // Semi-transparent dark rectangle covering the whole world as a mask
+    L.rectangle([[-90, -180], [90, 180]], {
+      pane: 'maskPane',
+      color: 'transparent',
+      fillColor: '#000000',
+      fillOpacity: 0.38,
+      stroke: false,
+      interactive: false,
+    } as L.PolylineOptions).addTo(map);
 
     mapRef.current = map;
     return () => {
@@ -108,7 +125,10 @@ export function MapPanel({ layers: initialLayers, height = 420, caption, project
     tileLayerRef.current = L.tileLayer(t.url, {
       attribution: t.attribution,
       maxZoom: t.maxZoom,
+      opacity: 0.55,
     }).addTo(map);
+    // Ensure tile is below mask pane
+    tileLayerRef.current.setZIndex(1);
   }, [basemap]);
 
   // Load and render GeoJSON boundaries
@@ -134,10 +154,11 @@ export function MapPanel({ layers: initialLayers, height = 420, caption, project
             const uid = feat?.properties?.unit_id as string;
             const score = scoreByUnitId[uid] ?? 60;
             return {
-              color: showCondition ? '#0d1117' : '#238636',
-              weight: 0.8,
-              fillColor: showCondition ? scoreToColor(score) : '#238636',
-              fillOpacity: 0.6,
+              color: '#ffffff',
+              weight: 1.5,
+              fillColor: showCondition ? scoreToColor(score) : '#4ade80',
+              fillOpacity: 0.78,
+              opacity: 0.7,
             };
           },
           onEachFeature: (feat, layer) => {
@@ -175,10 +196,11 @@ export function MapPanel({ layers: initialLayers, height = 420, caption, project
       const uid = feat?.properties?.unit_id as string;
       const score = scoreByUnitId[uid] ?? 60;
       return {
-        color: showCondition ? '#0d1117' : '#238636',
-        weight: 0.8,
-        fillColor: showCondition ? scoreToColor(score) : '#238636',
-        fillOpacity: 0.6,
+        color: '#ffffff',
+        weight: 1.5,
+        fillColor: showCondition ? scoreToColor(score) : '#4ade80',
+        fillOpacity: 0.78,
+        opacity: 0.7,
       };
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -191,7 +213,7 @@ export function MapPanel({ layers: initialLayers, height = 420, caption, project
         <div className="flex items-center gap-2 text-xs font-medium text-tn-text">
           <Layers className="h-3.5 w-3.5 text-tn-accent" />
           {isFrance
-            ? 'Loire riparian corridor · EMEA_France_26 · 2,361 field units'
+            ? 'EMEA France · EMEA_France_26 · 2,361 field units'
             : 'Interactive map'}
         </div>
         <div className="flex items-center gap-2">
@@ -256,11 +278,11 @@ export function MapPanel({ layers: initialLayers, height = 420, caption, project
               Condition score
             </div>
             {[
-              { color: '#238636', label: '≥80' },
-              { color: '#2ea043', label: '70–79' },
-              { color: '#58a6ff', label: '60–69' },
-              { color: '#f0883e', label: '50–59' },
-              { color: '#f85149', label: '<50' },
+              { color: '#4ade80', label: '≥80' },
+              { color: '#86efac', label: '70–79' },
+              { color: '#60a5fa', label: '60–69' },
+              { color: '#fb923c', label: '50–59' },
+              { color: '#f87171', label: '<50' },
             ].map(item => (
               <div key={item.label} className="flex items-center gap-1.5 leading-5">
                 <span className="inline-block h-3 w-3 rounded-sm" style={{ background: item.color }} />

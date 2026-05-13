@@ -11,10 +11,6 @@
   </head>
   <body style="background-color:#0d1117;">
     <div id="root"></div>
-    <!-- Google Identity Services — must load before EE so ensureAuthLibLoaded_ finds window.default_gsi already set -->
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
-    <!-- Google Earth Engine JS client — loads window.ee before React boots -->
-    <script src="/ee_api_js_npm.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

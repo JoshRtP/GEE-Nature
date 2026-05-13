@@ -16,6 +16,7 @@ import { CommunityTab } from './tabs/CommunityTab';
 import { QATab } from './tabs/QATab';
 import { ExportTab } from './tabs/ExportTab';
 import { ScoreBadge } from '../components/ui/ScoreBadge';
+import { GEEStatusProvider } from '../lib/useEarthEngine';
 
 interface Props {
   projectId: string;
@@ -76,6 +77,7 @@ export function ProjectDetail({ projectId, onTitle }: Props) {
   }
 
   return (
+    <GEEStatusProvider projectId={projectId}>
     <div className="space-y-6 animate-fadeIn">
       <header className="rounded-xl border border-tn-border bg-tn-surface p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -116,5 +118,6 @@ export function ProjectDetail({ projectId, onTitle }: Props) {
         {tab === 'export' ? <ExportTab project={project} units={units} issues={issues} /> : null}
       </div>
     </div>
+    </GEEStatusProvider>
   );
 }

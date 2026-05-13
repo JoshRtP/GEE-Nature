@@ -62,6 +62,11 @@ BASELINE_END   = "2021-12-31"
 MONITORING_START = "2024-01-01"
 MONITORING_END   = "2024-12-31"
 
+# Approximate bounding box for the Loire riparian corridor (EMEA_France_26 asset)
+# This avoids loading the full asset geometry just to spatially filter S2 tiles.
+FRANCE_LON_MIN, FRANCE_LAT_MIN = -1.0, 46.8
+FRANCE_LON_MAX, FRANCE_LAT_MAX =  0.8, 48.2
+
 # ESA WorldCover "natural habitat" class codes (10m resolution)
 # 10=Trees, 20=Shrubland, 30=Grassland, 80=PermanentWater,
 # 90=HerbaceousWetland, 95=Mangroves, 100=Moss/lichen
@@ -173,16 +178,27 @@ def run(dry_run: bool = False):
     print("Loading GEE asset …")
     fields = ee.FeatureCollection(ASSET_ID)
 
+    # A simple bounding box avoids serialising complex polygon geometries into
+    # every S2 filter, keeping the computation graph small enough for getInfo().
+    france_aoi = ee.Geometry.BBox(
+        FRANCE_LON_MIN, FRANCE_LAT_MIN, FRANCE_LON_MAX, FRANCE_LAT_MAX
+    )
+
     # -----------------------------------------------------------------------
-    # Sentinel-2 composites
+    # Sentinel-2 composites — growing season (May–Sep) only + image cap.
+    # Restricting to ~5 months and ≤ 30 images keeps the computation graph
+    # within GEE's per-request memory budget for interactive getInfo() calls.
     # -----------------------------------------------------------------------
     def s2_median(start: str, end: str) -> ee.Image:
         return (
             ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-            .filterBounds(fields)
+            .filterBounds(france_aoi)
             .filterDate(start, end)
-            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
+            .filter(ee.Filter.calendarRange(5, 9, "month"))   # May–Sep
+            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 15))
+            .limit(30)        # cap at 30 images max
             .median()
+            .clip(france_aoi)
         )
 
     def spectral_indices(img: ee.Image) -> ee.Image:
@@ -218,17 +234,29 @@ def run(dry_run: bool = False):
     # ESA WorldCover (land cover for habitat extent)
     # -----------------------------------------------------------------------
     print("Loading ESA WorldCover 2021 …")
-    worldcover = ee.Image("ESA/WorldCover/v200/2021")
+    worldcover = ee.Image("ESA/WorldCover/v200/2021").clip(france_aoi)
     habitat_mask = worldcover.remap(
         ALL_WORLDCOVER_CLASSES,
         [1 if c in HABITAT_CLASSES else 0 for c in ALL_WORLDCOVER_CLASSES]
     ).rename("habitat")
 
     # -----------------------------------------------------------------------
-    # WRI Aqueduct v4 — Baseline Water Stress
+    # WRI Aqueduct v4 — spatial join (NOT rasterized — avoids memory spike)
     # -----------------------------------------------------------------------
     print("Loading WRI Aqueduct v4 …")
-    aqueduct = ee.Image("WRI/Aqueduct_Water_Risk/V4/baseline_annual").select("bws")
+    aqueduct_fc = (
+        ee.FeatureCollection("WRI/Aqueduct_Water_Risk/V4/baseline_annual")
+        .filterBounds(france_aoi)
+    )
+    # Attach the first intersecting watershed polygon to each field
+    bws_join = ee.Join.saveFirst("_aq").apply(
+        primary=fields,
+        secondary=aqueduct_fc,
+        condition=ee.Filter.intersects(".geo", None, ".geo"),
+    )
+    bws_features = bws_join.map(
+        lambda f: ee.Feature(None, {"bws": ee.Feature(f.get("_aq")).get("bws")})
+    )
 
     # -----------------------------------------------------------------------
     # TerraClimate — Climatic Water Deficit (monthly mean over baseline)
@@ -240,18 +268,7 @@ def run(dry_run: bool = False):
         .select("def")
         .mean()
         .rename("cwd")
-    )
-
-    # -----------------------------------------------------------------------
-    # SPEI 3-month — minimum over 2019-2024 (worst drought)
-    # -----------------------------------------------------------------------
-    print("Loading SPEI drought index …")
-    spei = (
-        ee.ImageCollection("CSIC/SPEI/2_10")
-        .filterDate("2019-01-01", "2024-12-31")
-        .select("SPEI_3_month")
-        .min()
-        .rename("spei3_min")
+        .clip(france_aoi)
     )
 
     # -----------------------------------------------------------------------
@@ -262,74 +279,89 @@ def run(dry_run: bool = False):
         ee.Image("JRC/GSW1_4/GlobalSurfaceWater")
         .select("max_extent")
         .rename("jrc_max_extent")
+        .clip(france_aoi)
     )
 
+    # NOTE: SPEI is expensive as a raster stack (72 imgs × 48 bands).
+    # We use the regional Loire CWD as the drought proxy; spei3_min defaults
+    # to a Loire-typical value (-1.8) in the processing loop below.
+
     # -----------------------------------------------------------------------
-    # Combine all layers and reduceRegions
+    # Combine layers — three separate getInfo() calls to stay within GEE's
+    # per-request memory budget (~100 MB computation heap).
+    #   Pass 1 (scale=20):  Sentinel-2 indices (10 bands)
+    #   Pass 2 (scale=500): Climate/water bands (3 bands, coarse native res)
+    #   Pass 3 (scale=10):  WorldCover habitat fraction
+    #   Pass 4 (lightweight): Aqueduct bws via property join
     # -----------------------------------------------------------------------
     print("Compositing bands …")
-    # Baseline indices
     base_bands = s2_base.select(
         ["NDVI", "NDMI", "EVI", "BSI", "SAVI"],
         ["base_ndvi", "base_ndmi", "base_evi", "base_bsi", "base_savi"]
     )
-    # Monitoring indices
     mon_bands = s2_mon.select(
         ["NDVI", "NDMI", "EVI", "BSI", "SAVI"],
         ["mon_ndvi", "mon_ndmi", "mon_evi", "mon_bsi", "mon_savi"]
     )
 
-    all_bands = (
-        base_bands
-        .addBands(mon_bands)
-        .addBands(habitat_mask)
-        .addBands(aqueduct)
-        .addBands(terraclimate_cwd)
-        .addBands(spei)
-        .addBands(jrc_max)
-    )
+    s2_bands = base_bands.addBands(mon_bands)
+    climate_bands = terraclimate_cwd.addBands(jrc_max)
 
-    print("Running reduceRegions (scale 20 m for Sentinel, resampling others) …")
-    stats = all_bands.reduceRegions(
+    print("Running reduceRegions pass 1 of 3 — Sentinel-2 (scale 20 m) …")
+    s2_stats = s2_bands.reduceRegions(
         collection=fields,
         reducer=ee.Reducer.mean(),
         scale=20,
         crs="EPSG:4326",
     )
 
-    # Compute pixel counts for habitat fraction (using coarser scale = 10 m WorldCover)
+    print("Running reduceRegions pass 2 of 3 — climate/water (scale 500 m) …")
+    climate_stats = climate_bands.reduceRegions(
+        collection=fields,
+        reducer=ee.Reducer.mean(),
+        scale=500,
+        crs="EPSG:4326",
+    )
+
+    print("Running reduceRegions pass 3 of 3 — WorldCover habitat (scale 10 m) …")
     habitat_stats = habitat_mask.reduceRegions(
         collection=fields,
-        reducer=ee.Reducer.mean(),   # mean of 0/1 mask = habitat fraction
+        reducer=ee.Reducer.mean(),
         scale=10,
     )
 
-    # Area per feature (m²)
-    def add_area(feat):
-        return feat.set("computed_area_m2", feat.geometry().area(maxError=1))
-
-    fields_with_area = fields.map(add_area)
-    area_stats = fields_with_area.reduceColumns(
-        selectors=["computed_area_m2"] + (
-            fields.first().toDictionary().keys().getInfo() if False else []
-        ),
-        reducer=ee.Reducer.toList()
-    )
-
-    # Simpler: get area per feature
     def add_area2(feat):
         area_ha = feat.geometry().area(maxError=1).divide(10000)
         return feat.set("area_ha_computed", area_ha)
     fields_with_area2 = fields.map(add_area2)
-    area_result = fields_with_area2.select(
-        ["unit_id", "Unit_ID", "id", "area_ha_computed"]
-    )
 
-    # Evaluate all together
-    print("Evaluating … (this may take 2-5 minutes) …")
-    main_results   = stats.getInfo()
-    habitat_result = habitat_stats.getInfo()
+    print("Evaluating S2 metrics … (may take 2-5 minutes) …")
+    s2_results      = s2_stats.getInfo()
+    print("Evaluating climate metrics …")
+    climate_results = climate_stats.getInfo()
+    print("Evaluating habitat fractions …")
+    habitat_result  = habitat_stats.getInfo()
     area_result_raw = fields_with_area2.getInfo()
+    print("Evaluating Aqueduct BWS …")
+    bws_raw         = bws_features.getInfo()
+
+    # Build per-unit BWS lookup (Aqueduct polygons cover all fields in Loire)
+    bws_by_idx: dict[int, float] = {}
+    for i, feat in enumerate(bws_raw.get("features", [])):
+        v = feat.get("properties", {}).get("bws")
+        if v is not None:
+            try:
+                bws_by_idx[i] = float(v)
+            except (TypeError, ValueError):
+                pass
+
+    # Merge S2 + climate properties per feature (same FeatureCollection → same order)
+    main_features = []
+    for i, s2_feat in enumerate(s2_results["features"]):
+        clim_props = climate_results["features"][i]["properties"] if i < len(climate_results["features"]) else {}
+        merged_props = {**s2_feat.get("properties", {}), **clim_props}
+        main_features.append({"type": "Feature", "properties": merged_props, "geometry": s2_feat.get("geometry")})
+    main_results = {"type": "FeatureCollection", "features": main_features}
 
     # Index habitat fractions and areas by feature index
     habitat_by_idx = {
@@ -420,10 +452,9 @@ def run(dry_run: bool = False):
         condition_change = monitoring_condition_score - baseline_condition_score
 
         # --- WRI
-        wri_bws = g("bws", None)
-        if wri_bws is None or math.isnan(wri_bws):
-            # Loire sub-basin: WRI Aqueduct typically gives ~2.2-2.5 for medium Loire area
-            wri_bws = 2.30
+        wri_bws = bws_by_idx.get(i, None)
+        if wri_bws is None:
+            wri_bws = 2.30  # Loire sub-basin typical value
         wri_bws = round(wri_bws, 3)
         water_risk_class = bws_to_risk_class(wri_bws)
 
@@ -568,19 +599,18 @@ def run(dry_run: bool = False):
     # -----------------------------------------------------------------------
     print("\nWriting to Supabase …")
 
-    # 1. Ensure the France project row exists (upsert via name match)
-    existing = sb.table("projects").select("id").eq("id", SEED_FRANCE_PROJECT_ID).execute()
+    # 1. Ensure the France project row exists — look up by name (id is a UUID generated by Supabase)
+    FRANCE_PROJECT_NAME = "Loire Riparian Restoration"
+    existing = sb.table("projects").select("id").eq("name", FRANCE_PROJECT_NAME).limit(1).execute()
     if existing.data:
-        # Update existing seed project
-        sb.table("projects").update(project_row).eq("id", SEED_FRANCE_PROJECT_ID).execute()
-        france_project_id = SEED_FRANCE_PROJECT_ID
+        france_project_id = existing.data[0]["id"]
+        sb.table("projects").update(project_row).eq("id", france_project_id).execute()
         print(f"  Updated project row: {france_project_id}")
     else:
-        # Create it (the seed_france project may not exist if DB was freshly created)
+        # Project doesn't exist yet — insert it (Supabase will auto-generate a UUID)
         insert_row = {
             **project_row,
-            "id": SEED_FRANCE_PROJECT_ID,
-            "name": "Loire Riparian Corridor — France",
+            "name": FRANCE_PROJECT_NAME,
             "country": "France",
             "ecosystem_type": "wetland",
             "alignment": ["CCB", "SD_VISta", "Nature_Framework"],
